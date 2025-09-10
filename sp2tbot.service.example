@@ -1,0 +1,17 @@
+[Unit]
+Description=Speech to text telegram bot
+After=syslog.target
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+ExecStart=/path/to/sp2tbot
+WorkingDirectory=/path/to/config
+Environment="VOSK_PATH=/path/to/vosk-linux-x86_64-0.3.45"
+Environment="LD_LIBRARY_PATH=/path/to/vosk-linux-x86_64-0.3.45"
+RestartSec=10
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

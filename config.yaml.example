@@ -1,0 +1,5 @@
+apiKey: "YOUR_TELEGRAM_BOT_API_KEY"
+modelPath: "vosk-model-small-ru-0.22"
+allowedUserIds:
+  - 123456789
+  - 987654321
