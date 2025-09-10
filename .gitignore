@@ -2,3 +2,4 @@ sp2tbot
 config.yaml
 vosk-model*
 sp2tbot.service
+.vscode
