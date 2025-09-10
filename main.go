@@ -121,16 +121,79 @@ func isLikelyAudio(m *telegram.Message) bool {
 // cleanupOldTempFiles removes leftover temporary files created by this app that are older than maxAge.
 func cleanupOldTempFiles() {
 	tmpDir := os.TempDir()
-	entries, err := os.ReadDir(tmpDir)
+	patterns := []string{
+		filepath.Join(tmpDir, "tg-audio-*"),
+		filepath.Join(tmpDir, "*-converted.wav"),
+	}
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		for _, path := range matches {
+			_ = os.Remove(path)
+		}
+	}
+}
+
+type RecognizerLike interface {
+    AcceptWaveform([]byte) int
+    FinalResult() string
+}
+
+func handleUpdate(bot *telegram.BotAPI, recognizer RecognizerLike, msg *telegram.Message) {
+	var fileID string
+	if msg.Voice != nil {
+		fileID = msg.Voice.FileID
+	} else if msg.Audio != nil {
+		fileID = msg.Audio.FileID
+	} else if msg.Document != nil {
+		fileID = msg.Document.FileID
+	}
+
+	waiting := telegram.NewMessage(msg.Chat.ID, "Обрабатываю файл…")
+	sent, _ := bot.Send(waiting)
+
+	localPath, err := downloadTelegramFile(bot, fileID)
 	if err != nil {
- 		return
- 	}
- 	for _, entry := range entries {
- 		name := entry.Name()
- 		if strings.HasPrefix(name, "tg-audio-") {
-			os.Remove(filepath.Join(tmpDir, name))
- 		}
- 	}
+		edit := telegram.NewEditMessageText(msg.Chat.ID, sent.MessageID, fmt.Sprintf("Ошибка скачивания файла: %v", err))
+		_, _ = bot.Request(edit)
+		return
+	}
+	defer os.Remove(localPath)
+
+	converted, err := convertToWav16kMonoPcmS16le(localPath)
+	if err != nil {
+		edit := telegram.NewEditMessageText(msg.Chat.ID, sent.MessageID, fmt.Sprintf("Ошибка конвертации: %v", err))
+		_, _ = bot.Request(edit)
+		return
+	}
+	defer os.Remove(converted)
+
+	data, err := readAll(converted)
+	if err != nil {
+		edit := telegram.NewEditMessageText(msg.Chat.ID, sent.MessageID, fmt.Sprintf("Ошибка чтения файла: %v", err))
+		_, _ = bot.Request(edit)
+		return
+	}
+
+	_ = recognizer.AcceptWaveform(data)
+	resultText := recognizer.FinalResult()
+	if strings.TrimSpace(resultText) == "" {
+		resultText = "Не удалось распознать речь."
+	}
+
+	var answer VoskAnswer
+	err = json.Unmarshal([]byte(resultText), &answer)
+	if err != nil {
+		resultText = "Ошибка преобразования JSON-ответа VOSK " + err.Error()
+	} else {
+		resultText = answer.Text
+	}
+
+	edit := telegram.NewEditMessageText(msg.Chat.ID, sent.MessageID, resultText)
+	_, _ = bot.Request(edit)
+	time.Sleep(100 * time.Millisecond)
 }
 
 func main() {
@@ -192,59 +255,6 @@ func main() {
 			continue
 		}
 
-		func() {
-			var fileID string
-			if update.Message.Voice != nil {
-				fileID = update.Message.Voice.FileID
-			} else if update.Message.Audio != nil {
-				fileID = update.Message.Audio.FileID
-			} else if update.Message.Document != nil {
-				fileID = update.Message.Document.FileID
-			}
-
-			waiting := telegram.NewMessage(update.Message.Chat.ID, "Обрабатываю файл…")
-			sent, _ := bot.Send(waiting)
-
-			localPath, err := downloadTelegramFile(bot, fileID)
-			if err != nil {
-				edit := telegram.NewEditMessageText(update.Message.Chat.ID, sent.MessageID, fmt.Sprintf("Ошибка скачивания файла: %v", err))
-				_, _ = bot.Request(edit)
-				return
-			}
-			defer os.Remove(localPath)
-
-			converted, err := convertToWav16kMonoPcmS16le(localPath)
-			if err != nil {
-				edit := telegram.NewEditMessageText(update.Message.Chat.ID, sent.MessageID, fmt.Sprintf("Ошибка конвертации: %v", err))
-				_, _ = bot.Request(edit)
-				return
-			}
-			defer os.Remove(converted)
-
-			data, err := readAll(converted)
-			if err != nil {
-				edit := telegram.NewEditMessageText(update.Message.Chat.ID, sent.MessageID, fmt.Sprintf("Ошибка чтения файла: %v", err))
-				_, _ = bot.Request(edit)
-				return
-			}
-
-			_ = recognizer.AcceptWaveform(data)
-			resultText := recognizer.FinalResult()
-			if strings.TrimSpace(resultText) == "" {
-				resultText = "Не удалось распознать речь."
-			}
-
-			var answer VoskAnswer
-			err = json.Unmarshal([]byte(resultText), &answer)
-			if err != nil {
-				resultText = "Ошибка преобразования JSON-ответа VOSK " + err.Error()
-			} else {
-				resultText = answer.Text
-			}
-
-			edit := telegram.NewEditMessageText(update.Message.Chat.ID, sent.MessageID, resultText)
-			_, _ = bot.Request(edit)
-			time.Sleep(100 * time.Millisecond)
-		}()
+		handleUpdate(bot, recognizer, update.Message)
 	}
 }
