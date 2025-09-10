@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -117,7 +118,24 @@ func isLikelyAudio(m *telegram.Message) bool {
 	return false
 }
 
+// cleanupOldTempFiles removes leftover temporary files created by this app that are older than maxAge.
+func cleanupOldTempFiles() {
+	tmpDir := os.TempDir()
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+ 		return
+ 	}
+ 	for _, entry := range entries {
+ 		name := entry.Name()
+ 		if strings.HasPrefix(name, "tg-audio-") {
+			os.Remove(filepath.Join(tmpDir, name))
+ 		}
+ 	}
+}
+
 func main() {
+    // Sweep old temporary files older than 1 hour
+    cleanupOldTempFiles()
 	cfg, err := loadConfig("config.yaml")
 	if err != nil {
 		fmt.Printf("Failed to load config: %v\n", err)
@@ -174,57 +192,59 @@ func main() {
 			continue
 		}
 
-		var fileID string
-		if update.Message.Voice != nil {
-			fileID = update.Message.Voice.FileID
-		} else if update.Message.Audio != nil {
-			fileID = update.Message.Audio.FileID
-		} else if update.Message.Document != nil {
-			fileID = update.Message.Document.FileID
-		}
+		func() {
+			var fileID string
+			if update.Message.Voice != nil {
+				fileID = update.Message.Voice.FileID
+			} else if update.Message.Audio != nil {
+				fileID = update.Message.Audio.FileID
+			} else if update.Message.Document != nil {
+				fileID = update.Message.Document.FileID
+			}
 
-		waiting := telegram.NewMessage(update.Message.Chat.ID, "Обрабатываю файл…")
-		sent, _ := bot.Send(waiting)
+			waiting := telegram.NewMessage(update.Message.Chat.ID, "Обрабатываю файл…")
+			sent, _ := bot.Send(waiting)
 
-		localPath, err := downloadTelegramFile(bot, fileID)
-		if err != nil {
-			edit := telegram.NewEditMessageText(update.Message.Chat.ID, sent.MessageID, fmt.Sprintf("Ошибка скачивания файла: %v", err))
+			localPath, err := downloadTelegramFile(bot, fileID)
+			if err != nil {
+				edit := telegram.NewEditMessageText(update.Message.Chat.ID, sent.MessageID, fmt.Sprintf("Ошибка скачивания файла: %v", err))
+				_, _ = bot.Request(edit)
+				return
+			}
+			defer os.Remove(localPath)
+
+			converted, err := convertToWav16kMonoPcmS16le(localPath)
+			if err != nil {
+				edit := telegram.NewEditMessageText(update.Message.Chat.ID, sent.MessageID, fmt.Sprintf("Ошибка конвертации: %v", err))
+				_, _ = bot.Request(edit)
+				return
+			}
+			defer os.Remove(converted)
+
+			data, err := readAll(converted)
+			if err != nil {
+				edit := telegram.NewEditMessageText(update.Message.Chat.ID, sent.MessageID, fmt.Sprintf("Ошибка чтения файла: %v", err))
+				_, _ = bot.Request(edit)
+				return
+			}
+
+			_ = recognizer.AcceptWaveform(data)
+			resultText := recognizer.FinalResult()
+			if strings.TrimSpace(resultText) == "" {
+				resultText = "Не удалось распознать речь."
+			}
+
+			var answer VoskAnswer
+			err = json.Unmarshal([]byte(resultText), &answer)
+			if err != nil {
+				resultText = "Ошибка преобразования JSON-ответа VOSK " + err.Error()
+			} else {
+				resultText = answer.Text
+			}
+
+			edit := telegram.NewEditMessageText(update.Message.Chat.ID, sent.MessageID, resultText)
 			_, _ = bot.Request(edit)
-			continue
-		}
-		defer os.Remove(localPath)
-
-		converted, err := convertToWav16kMonoPcmS16le(localPath)
-		if err != nil {
-			edit := telegram.NewEditMessageText(update.Message.Chat.ID, sent.MessageID, fmt.Sprintf("Ошибка конвертации: %v", err))
-			_, _ = bot.Request(edit)
-			continue
-		}
-		defer os.Remove(converted)
-
-		data, err := readAll(converted)
-		if err != nil {
-			edit := telegram.NewEditMessageText(update.Message.Chat.ID, sent.MessageID, fmt.Sprintf("Ошибка чтения файла: %v", err))
-			_, _ = bot.Request(edit)
-			continue
-		}
-
-		_ = recognizer.AcceptWaveform(data)
-		resultText := recognizer.FinalResult()
-		if strings.TrimSpace(resultText) == "" {
-			resultText = "Не удалось распознать речь."
-		}
-
-		var answer VoskAnswer
-		err = json.Unmarshal([]byte(resultText), &answer)
-		if err != nil {
-			resultText = "Ошибка преобразования JSON-ответа VOSK " + err.Error()
-		} else {
-			resultText = answer.Text
-		}
-
-		edit := telegram.NewEditMessageText(update.Message.Chat.ID, sent.MessageID, resultText)
-		_, _ = bot.Request(edit)
-		time.Sleep(100 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
+		}()
 	}
 }
