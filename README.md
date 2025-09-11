@@ -11,6 +11,7 @@ make
 
 # Prerequisites  
 VOSK library is built for linux x64. If you need another OS/architechture, build it yourself.  
+Also required ffmpeg.  
 
 ## VOSK model  
 Download and unzip model for your language https://alphacephei.com/vosk/models  
