@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -193,7 +192,7 @@ func handleUpdate(bot *telegram.BotAPI, recognizer RecognizerLike, msg *telegram
 
 	edit := telegram.NewEditMessageText(msg.Chat.ID, sent.MessageID, resultText)
 	_, _ = bot.Request(edit)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 }
 
 func main() {
@@ -235,8 +234,6 @@ func main() {
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
 
-	ctx := context.Background()
-	_ = ctx
 	for update := range updates {
 		if update.Message == nil {
 			continue
@@ -245,13 +242,13 @@ func main() {
 		userID := update.Message.From.ID
 		if !isUserAllowed(userID, cfg.AllowedUserIDs) {
 			msg := telegram.NewMessage(update.Message.Chat.ID, "Доступ запрещён.")
-			_, _ = bot.Send(msg)
+			bot.Send(msg)
 			continue
 		}
 
 		if !isLikelyAudio(update.Message) {
 			msg := telegram.NewMessage(update.Message.Chat.ID, "Пожалуйста, пришлите аудио/voice файл.")
-			_, _ = bot.Send(msg)
+			bot.Send(msg)
 			continue
 		}
 
